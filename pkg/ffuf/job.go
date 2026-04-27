@@ -288,15 +288,22 @@ func (j *Job) interruptMonitor() {
 	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
 	go func() {
 		for range sigChan {
-			j.Error = "Caught keyboard interrupt (Ctrl-C)\n"
-			// resume if paused
-			if j.Paused {
-				j.pauseWg.Done()
-			}
-			// Stop the job
-			j.Stop()
+			j.handleInterrupt()
 		}
 	}()
+}
+
+func (j *Job) handleInterrupt() {
+	j.Error = "Caught keyboard interrupt (Ctrl-C)\n"
+	// Resume if paused. Clear j.Paused before calling Done so a second
+	// signal arriving before Stop has fully torn things down doesn't drop
+	// the WaitGroup counter below zero (which would panic in this goroutine
+	// with no recover, killing the process).
+	if j.Paused {
+		j.Paused = false
+		j.pauseWg.Done()
+	}
+	j.Stop()
 }
 
 func (j *Job) runBackgroundTasks(wg *sync.WaitGroup) {
