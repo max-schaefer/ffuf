@@ -662,7 +662,30 @@ func parseRawRequest(parseOpts *ConfigOptions, conf *Config) error {
 			continue
 		}
 
-		conf.Headers[strings.TrimSpace(p[0])] = strings.TrimSpace(p[1])
+		headerName := strings.TrimSpace(p[0])
+		// Canonicalize so downstream lookups like conf.Headers["Host"] (and
+		// pkg/runner/simple.go) work regardless of the case the user wrote in
+		// the raw request file. Skip canonicalization if the header name
+		// contains an input keyword, mirroring the -H flag handling above.
+		canonicalNeeded := true
+		for _, k := range conf.CommandKeywords {
+			if strings.Contains(headerName, k) {
+				canonicalNeeded = false
+				break
+			}
+		}
+		if canonicalNeeded {
+			for _, p := range conf.InputProviders {
+				if strings.Contains(headerName, p.Keyword) {
+					canonicalNeeded = false
+					break
+				}
+			}
+		}
+		if canonicalNeeded {
+			headerName = textproto.CanonicalMIMEHeaderKey(headerName)
+		}
+		conf.Headers[headerName] = strings.TrimSpace(p[1])
 	}
 
 	// Handle case with the full http url in path. In that case,

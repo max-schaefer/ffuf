@@ -1,6 +1,9 @@
 package ffuf
 
 import (
+	"context"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -176,5 +179,51 @@ func TestReplayProxyParsing(t *testing.T) {
 	_, err = ConfigFromOptions(configOptions, nil, nil)
 	if !strings.Contains(err.Error(), errorString) {
 		t.Errorf("Expected proxy string with unsupported protocol to fail")
+	}
+}
+
+// Regression: parseRawRequest stored header keys with their original case
+// while the URL builder (and pkg/runner/simple.go) looked up
+// conf.Headers["Host"] literally. Request files with a lowercase "host:" line
+// — which HTTP/2 mandates and tools like nghttp / browser DevTools emit —
+// produced a URL of the form "https:///path" with an empty host.
+func TestParseRawRequestLowercaseHost(t *testing.T) {
+	cases := map[string]string{
+		"lowercase":  "host: example.com",
+		"uppercase":  "HOST: example.com",
+		"mixed-case": "hOsT: example.com",
+		"canonical":  "Host: example.com",
+	}
+	for name, hostLine := range cases {
+		t.Run(name, func(t *testing.T) {
+			tmp := t.TempDir()
+			reqPath := filepath.Join(tmp, "req.txt")
+			body := "GET /path HTTP/1.1\r\n" + hostLine + "\r\nUser-Agent: ffuf-test\r\n\r\n"
+			if err := os.WriteFile(reqPath, []byte(body), 0600); err != nil {
+				t.Fatalf("could not write request file: %s", err)
+			}
+
+			parseOpts := NewConfigOptions()
+			parseOpts.Input.Request = reqPath
+			parseOpts.Input.RequestProto = "https"
+
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			conf := NewConfig(ctx, cancel)
+
+			if err := parseRawRequest(parseOpts, &conf); err != nil {
+				t.Fatalf("parseRawRequest returned an error: %s", err)
+			}
+
+			if got, want := conf.Url, "https://example.com/path"; got != want {
+				t.Errorf("conf.Url = %q, want %q", got, want)
+			}
+			// Downstream code (pkg/runner/simple.go) reads conf.Headers["Host"]
+			// literally, so the canonical key must be present after parsing
+			// regardless of the case the user wrote in the raw request file.
+			if got, want := conf.Headers["Host"], "example.com"; got != want {
+				t.Errorf("conf.Headers[\"Host\"] = %q, want %q", got, want)
+			}
+		})
 	}
 }
